@@ -1,0 +1,11 @@
+{
+  "name": "DiffusionNet",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "runArgs": ["--gpus", "all"],
+  "workspaceFolder": "/workspaces/diffusion-net",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/diffusion-net,type=bind",
+  "overrideCommand": true
+}
