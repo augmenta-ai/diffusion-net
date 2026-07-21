@@ -2,7 +2,8 @@
   "name": "DiffusionNet",
   "build": {
     "dockerfile": "Dockerfile",
-    "context": ".."
+    "context": "..",
+    "target": "devcontainer"
   },
   "runArgs": ["--gpus", "all"],
   "workspaceFolder": "/workspaces/diffusion-net",

@@ -86,6 +86,103 @@ for sample in your_dataset:
 
 See the examples in `experiments/` for complete examples, including dataloaders, other features, optimizers, etc. Please feel free to file an issue to discuss applying DiffusionNet to your problem!
 
+## BIM Element Classification
+
+The BIM classification experiment treats each BIM element as one mesh sample.
+
+### Data
+
+The data directory must contain `train` and `test` splits, with one directory
+per study:
+
+```text
+DATA_DIR/
+  train/
+    study_a/
+      bim_graph.json
+      mesh_faces.bin
+      mesh_verts.bin
+  test/
+    study_b/
+      bim_graph.json
+      mesh_faces.bin
+      mesh_verts.bin
+```
+
+Each study contains column-major `int32` triangle indices in `mesh_faces.bin`,
+column-major `float32` XYZ coordinates in `mesh_verts.bin`, and element
+categories and face ranges in `bim_graph.json`.
+
+### Training
+
+```sh
+python experiments/classification_agmt/main.py train \
+  --data_dir=/path/to/data \
+  --output_dir=runs/agmt_diffusionnet \
+  --config=/path/to/hyperparameters.json
+```
+
+The config controls model and optimization settings. Omitted values use these
+defaults:
+
+```json
+{
+  "input_features": "hks",
+  "max_epoch": 200,
+  "learning_rate": 0.001,
+  "weight_decay": 0.000001,
+  "label_smoothing": 0.0,
+  "k_eig": 128,
+  "width": 64,
+  "blocks": 4,
+  "dropout": true,
+  "num_workers": 0,
+  "seed": 42,
+  "scheduler_gamma": 0.98
+}
+```
+
+Without `--config`, training checks
+`/opt/ml/input/config/hyperparameters.json` and otherwise uses the defaults.
+Set `input_features` to `xyz` for coordinate features with random rotation
+augmentation; the default `hks` features are intrinsic.
+
+Categories default to the sorted union found in both splits. Restrict them with
+`--target_categories` pointing to a JSON list or an object containing a
+`targets` list.
+
+Training uses one mesh per optimizer step because mesh operators have different
+dimensions. The output directory contains the operator cache, resolved class
+list, and `last.pt` and `best.pt`. Resume with:
+
+```sh
+python experiments/classification_agmt/main.py train \
+  --data_dir=/path/to/data \
+  --output_dir=runs/agmt_diffusionnet \
+  --checkpoint=runs/agmt_diffusionnet/last.pt
+```
+
+### Container
+
+The Dockerfile provides a `devcontainer` target for VS Code and a runnable
+`main` target:
+
+```sh
+docker build --target devcontainer -f .devcontainer/Dockerfile -t diffusion-net-dev .
+docker build --target main -f .devcontainer/Dockerfile -t diffusion-net .
+```
+
+Run training by mounting the data, output directory, and config:
+
+```sh
+docker run --rm --gpus all \
+  -v /path/to/data:/data:ro \
+  -v /path/to/output:/output \
+  -v /path/to/hyperparameters.json:/config/hyperparameters.json:ro \
+  diffusion-net train --data_dir=/data --output_dir=/output \
+  --config=/config/hyperparameters.json
+```
+
 ### Tips and Tricks
 
 By default, DiffusionNet uses _spectral acceleration_ for fast performance, which requires some CPU-based precomputation to compute operators & eigendecompositions for each input, which can take a few seconds for moderately sized inputs. DiffusionNet will be fastest if this precomputation only needs to be performed once for the dataset, rather than for each input. 

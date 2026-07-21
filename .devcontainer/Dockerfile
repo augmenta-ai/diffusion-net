@@ -1,4 +1,4 @@
-FROM nvidia/cuda:11.1.1-cudnn8-devel-ubuntu20.04
+FROM nvidia/cuda:11.1.1-cudnn8-devel-ubuntu20.04 AS devcontainer
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -25,3 +25,9 @@ RUN conda env create --name diffusion_net --file /tmp/environment.yml \
 ENV PATH="/opt/conda/envs/diffusion_net/bin:${PATH}"
 ENV PYTHONPATH="/workspaces/diffusion-net/src"
 WORKDIR /workspaces/diffusion-net
+
+FROM devcontainer AS main
+
+COPY . /workspaces/diffusion-net
+
+ENTRYPOINT ["python", "/workspaces/diffusion-net/experiments/classification_agmt/main.py"]
