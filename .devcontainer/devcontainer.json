@@ -8,5 +8,13 @@
   "runArgs": ["--gpus", "all"],
   "workspaceFolder": "/workspaces/diffusion-net",
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/diffusion-net,type=bind",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.black-formatter"
+      ]
+    }
+  },
   "overrideCommand": true
 }
