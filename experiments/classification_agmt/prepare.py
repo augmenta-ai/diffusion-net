@@ -9,7 +9,7 @@ import numpy as np
 DEFAULT_POSITION_TOLERANCE = 1e-3
 
 
-def mesh_fingerprint(faces, verts, position_tolerance):
+def _localize_mesh(faces, verts):
     unique_vertex_ids, local_faces = np.unique(faces, return_inverse=True)
     if not len(unique_vertex_ids):
         raise ValueError("Cannot fingerprint an empty mesh")
@@ -18,11 +18,13 @@ def mesh_fingerprint(faces, verts, position_tolerance):
 
     local_verts = np.asarray(verts[unique_vertex_ids], dtype=np.float64)
     local_faces = local_faces.reshape(faces.shape)
+    return local_verts, local_faces
+
+
+def _mesh_measurements(local_verts, local_faces):
     centered_verts = local_verts - np.mean(local_verts, axis=0)
-    quantized_radii = _quantize(
-        np.linalg.norm(centered_verts, axis=1), position_tolerance
-    )
-    quantized_radii.sort()
+    radii = np.linalg.norm(centered_verts, axis=1)
+    radii.sort()
 
     triangles = local_verts[local_faces]
     edge_lengths = np.stack(
@@ -33,17 +35,97 @@ def mesh_fingerprint(faces, verts, position_tolerance):
         ),
         axis=1,
     )
-    quantized_edges = _quantize(edge_lengths, position_tolerance)
+    edge_lengths.sort(axis=1)
+    order = np.lexsort((edge_lengths[:, 2], edge_lengths[:, 1], edge_lengths[:, 0]))
+    return radii, edge_lengths[order]
+
+
+def _fingerprint_measurements(n_verts, n_faces, radii, edge_lengths, tolerance):
+    quantized_radii = _quantize(radii, tolerance)
+    quantized_radii.sort()
+
+    quantized_edges = _quantize(edge_lengths, tolerance)
     quantized_edges.sort(axis=1)
     order = np.lexsort(
         (quantized_edges[:, 2], quantized_edges[:, 1], quantized_edges[:, 0])
     )
 
     digest = hashlib.sha256()
-    digest.update(struct.pack("<QQ", len(local_verts), len(faces)))
+    digest.update(struct.pack("<QQ", n_verts, n_faces))
     digest.update(np.ascontiguousarray(quantized_radii).tobytes())
     digest.update(np.ascontiguousarray(quantized_edges[order]).tobytes())
     return digest.digest()
+
+
+def mesh_fingerprint(faces, verts, position_tolerance):
+    local_verts, local_faces = _localize_mesh(faces, verts)
+    radii, edge_lengths = _mesh_measurements(local_verts, local_faces)
+    return _fingerprint_measurements(
+        len(local_verts), len(local_faces), radii, edge_lengths, position_tolerance
+    )
+
+
+def _topology_signature(local_faces, n_verts):
+    edges = np.concatenate(
+        (
+            local_faces[:, (0, 1)],
+            local_faces[:, (1, 2)],
+            local_faces[:, (2, 0)],
+        ),
+        axis=0,
+    )
+    edges.sort(axis=1)
+    unique_edges, incidence_counts = np.unique(
+        edges, axis=0, return_counts=True
+    )
+    vertex_degrees = np.bincount(unique_edges.ravel(), minlength=n_verts)
+    return (
+        n_verts,
+        len(local_faces),
+        len(unique_edges),
+        tuple(np.sort(vertex_degrees).tolist()),
+        tuple(np.sort(incidence_counts).tolist()),
+    )
+
+
+def _measurements_match(first, second, position_tolerance):
+    first_radii, first_edges = first
+    second_radii, second_edges = second
+    return (
+        first_radii.shape == second_radii.shape
+        and first_edges.shape == second_edges.shape
+        and np.allclose(
+            first_radii, second_radii, rtol=0, atol=position_tolerance
+        )
+        and np.allclose(
+            first_edges, second_edges, rtol=0, atol=position_tolerance
+        )
+    )
+
+
+def _measurement_cell(measurements, position_tolerance):
+    radii, edges = measurements
+    return (
+        int(np.floor(radii[-1] / position_tolerance)),
+        int(np.floor(edges.max() / position_tolerance)),
+    )
+
+
+def _iter_candidate_cells(cell):
+    row, col = cell
+    for row_delta in (-1, 0, 1):
+        for col_delta in (-1, 0, 1):
+            yield (row + row_delta, col + col_delta)
+
+
+def _secondary_duplicate(bucket, measurements, position_tolerance):
+    cell = _measurement_cell(measurements, position_tolerance)
+    for candidate_cell in _iter_candidate_cells(cell):
+        for representative in bucket.get(candidate_cell, ()):
+            if _measurements_match(representative, measurements, position_tolerance):
+                return True
+    bucket.setdefault(cell, []).append(measurements)
+    return False
 
 
 def _quantize(values, tolerance):
@@ -75,6 +157,7 @@ def _prepare_study(
     study_dir,
     output_dir,
     seen,
+    secondary_buckets,
     position_tolerance,
     category_counts,
 ):
@@ -100,6 +183,8 @@ def _prepare_study(
     face_count = 0
     vertex_count = 0
     source_count = 0
+    fingerprint_removed_count = 0
+    secondary_removed_count = 0
 
     for element in graph.get("vertices", []):
         category = element.get("category")
@@ -117,24 +202,39 @@ def _prepare_study(
                 )
             )
 
-        fingerprint = mesh_fingerprint(
-            element_faces, verts_all, position_tolerance
+        local_verts, local_faces = _localize_mesh(element_faces, verts_all)
+        measurements = _mesh_measurements(local_verts, local_faces)
+        fingerprint = _fingerprint_measurements(
+            len(local_verts),
+            len(local_faces),
+            measurements[0],
+            measurements[1],
+            position_tolerance,
         )
         fingerprint_key = (category, fingerprint)
         if fingerprint_key in seen:
             category_counts[category]["removed"] += 1
+            category_counts[category]["fingerprint_removed"] += 1
+            fingerprint_removed_count += 1
             continue
         seen.add(fingerprint_key)
 
-        unique_vertex_ids, local_faces = np.unique(
-            element_faces, return_inverse=True
+        bucket_key = (
+            category,
+            _topology_signature(local_faces, len(local_verts)),
         )
-        local_verts = np.asarray(verts_all[unique_vertex_ids], dtype=np.float32)
-        local_faces = local_faces.reshape(element_faces.shape)
+        bucket = secondary_buckets[bucket_key]
+        if _secondary_duplicate(bucket, measurements, position_tolerance):
+            category_counts[category]["removed"] += 1
+            category_counts[category]["secondary_removed"] += 1
+            secondary_removed_count += 1
+            continue
+
         local_faces = local_faces + vertex_count
         if local_faces.max() > np.iinfo(np.int32).max:
             raise OverflowError("Prepared face index exceeds int32 range")
         local_faces = local_faces.astype(np.int32, copy=False)
+        local_verts = local_verts.astype(np.float32, copy=False)
 
         retained_element = dict(element)
         retained_element["face_offset"] = face_count
@@ -151,6 +251,8 @@ def _prepare_study(
         return {
             "source_count": source_count,
             "retained_count": 0,
+            "fingerprint_removed_count": fingerprint_removed_count,
+            "secondary_removed_count": secondary_removed_count,
             "face_count": 0,
             "vertex_count": 0,
         }
@@ -174,6 +276,8 @@ def _prepare_study(
     return {
         "source_count": source_count,
         "retained_count": len(retained_elements),
+        "fingerprint_removed_count": fingerprint_removed_count,
+        "secondary_removed_count": secondary_removed_count,
         "face_count": face_count,
         "vertex_count": vertex_count,
     }
@@ -191,6 +295,7 @@ def prepare_dataset(input_dir, output_dir, position_tolerance, progress_every=5)
     _validate_output_dir(output_dir)
 
     seen = set()
+    secondary_buckets = defaultdict(dict)
     category_counts = defaultdict(Counter)
     totals = Counter()
     studies_written = 0
@@ -203,6 +308,7 @@ def prepare_dataset(input_dir, output_dir, position_tolerance, progress_every=5)
             study_dir,
             output_dir,
             seen,
+            secondary_buckets,
             position_tolerance,
             category_counts,
         )
@@ -234,10 +340,19 @@ def prepare_dataset(input_dir, output_dir, position_tolerance, progress_every=5)
         "source_mesh_count": totals["source_count"],
         "retained_mesh_count": totals["retained_count"],
         "removed_mesh_count": totals["source_count"] - totals["retained_count"],
+        "fingerprint_removed_mesh_count": totals["fingerprint_removed_count"],
+        "secondary_removed_mesh_count": totals["secondary_removed_count"],
+        "secondary_filter": "topology_bucket_direct_measurement_comparison",
         "retained_face_count": totals["face_count"],
         "retained_vertex_count": totals["vertex_count"],
         "categories": {
-            category: dict(counts)
+            category: {
+                "source": counts["source"],
+                "retained": counts["retained"],
+                "removed": counts["removed"],
+                "fingerprint_removed": counts["fingerprint_removed"],
+                "secondary_removed": counts["secondary_removed"],
+            }
             for category, counts in sorted(category_counts.items())
         },
     }
@@ -271,11 +386,14 @@ def run(args):
         args.progress_every,
     )
     print(
-        "Prepared {:,} of {:,} meshes from {} studies; removed {:,} duplicates".format(
+        "Prepared {:,} of {:,} meshes from {} studies; removed {:,} duplicates "
+        "({:,} fingerprint, {:,} secondary)".format(
             summary["retained_mesh_count"],
             summary["source_mesh_count"],
             summary["studies_scanned"],
             summary["removed_mesh_count"],
+            summary["fingerprint_removed_mesh_count"],
+            summary["secondary_removed_mesh_count"],
         )
     )
     print("Wrote {}".format(args.output_dir))
