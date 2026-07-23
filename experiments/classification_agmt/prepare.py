@@ -1,4 +1,3 @@
-import argparse
 import hashlib
 import json
 import os
@@ -71,13 +70,6 @@ def _validate_graph(graph, graph_path):
     node_ids = [node["id"] for node in nodes]
     if len(node_ids) != len(set(node_ids)):
         raise ValueError("Graph node ids are not unique in {}".format(graph_path))
-    known_ids = set(node_ids)
-    if any(
-        edge.get("source") not in known_ids or edge.get("target") not in known_ids
-        for edge in graph.get("edges", [])
-    ):
-        raise ValueError("Graph edge has an invalid endpoint in {}".format(graph_path))
-
 
 def _prepare_study(
     study_dir,
@@ -163,48 +155,10 @@ def _prepare_study(
             "vertex_count": 0,
         }
 
-    retained_old_ids = {element["id"] for element in retained_elements}
-    retained_edges = [
-        edge
-        for edge in graph.get("edges", [])
-        if edge.get("source") in retained_old_ids
-        or edge.get("target") in retained_old_ids
-    ]
-    connected_ids = {
-        endpoint
-        for edge in retained_edges
-        for endpoint in (edge.get("source"), edge.get("target"))
-    }
-    retained_nodes = retained_elements + [
-        dict(node)
-        for node in graph.get("vertices", [])
-        if node.get("type") != "ELEMENT" and node.get("id") in connected_ids
-    ]
-    retained_ids = {node["id"] for node in retained_nodes}
-    retained_edges = [
-        dict(edge)
-        for edge in retained_edges
-        if edge.get("source") in retained_ids and edge.get("target") in retained_ids
-    ]
-
-    old_to_new = {
-        node["id"]: new_id for new_id, node in enumerate(retained_nodes)
-    }
-    for node in retained_nodes:
-        node["id"] = old_to_new[node["id"]]
-    for edge in retained_edges:
-        edge["source"] = old_to_new[edge["source"]]
-        edge["target"] = old_to_new[edge["target"]]
-
     study_output_dir = os.path.join(output_dir, os.path.basename(study_dir))
-    os.makedirs(study_output_dir)
-    output_graph = {
-        key: value
-        for key, value in graph.items()
-        if key not in ("vertices", "edges")
-    }
-    output_graph["vertices"] = retained_nodes
-    output_graph["edges"] = retained_edges
+    os.makedirs(study_output_dir, exist_ok=True)
+    output_graph = dict()
+    output_graph["vertices"] = retained_elements
     with open(os.path.join(study_output_dir, "bim_graph.json"), "w") as graph_file:
         json.dump(output_graph, graph_file, separators=(",", ":"))
     _write_mesh(
