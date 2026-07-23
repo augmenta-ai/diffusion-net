@@ -1,5 +1,6 @@
 import argparse
 
+import prepare
 import train
 
 
@@ -8,6 +9,7 @@ def parse_args():
         description="DiffusionNet commands for BIM element data."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+    prepare.add_subparser(subparsers)
     train.add_subparser(subparsers)
     return parser.parse_args()
 

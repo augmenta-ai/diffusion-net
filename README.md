@@ -113,6 +113,33 @@ Each study contains column-major `int32` triangle indices in `mesh_faces.bin`,
 column-major `float32` XYZ coordinates in `mesh_verts.bin`, and element
 categories and face ranges in `bim_graph.json`.
 
+### Preparing Data
+
+Remove repeated rigid instances from each split before training:
+
+```sh
+python experiments/classification_agmt/main.py prepare \
+  --input_dir=/path/to/source/train \
+  --output_dir=/path/to/prepared/train
+
+python experiments/classification_agmt/main.py prepare \
+  --input_dir=/path/to/source/test \
+  --output_dir=/path/to/prepared/test
+```
+
+Preparation keeps the first mesh in sorted study and graph order for each
+category and geometric fingerprint, then rewrites compact study graphs and
+binary geometry buffers. The fingerprint
+is invariant to translation, rotation, vertex order, face order, and triangle
+winding. It combines vertex and face counts with sorted, quantized
+centroid-to-vertex distances and triangle edge lengths. Scale changes remain
+distinct, while reflected copies match. The default absolute tolerance is
+`1e-3` feet; override it with `--position_tolerance`. Train and test must be
+prepared separately so no sample selection crosses the split boundary.
+
+The output directory must be empty. Each run writes `prepare_summary.json` with
+overall and per-category counts.
+
 ### Training
 
 ```sh
